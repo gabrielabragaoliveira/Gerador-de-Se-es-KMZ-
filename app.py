@@ -1,409 +1,203 @@
-import streamlit as st
-import pandas as pd
+!pip install python-docx fpdf -q
+
 import numpy as np
-import requests
-from bs4 import BeautifulSoup
-from geopy.distance import geodesic
-import time
-import zipfile
-import io
-import os
-import tempfile
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-from docx import Document
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+from datetime import datetime
+import os
+
+# Verificação do ambiente Colab para download nativo
+try:
+    from google.colab import files
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
+import docx
 from docx.shared import Inches
 from fpdf import FPDF
-import plotly.graph_objects as go
 
-# ==========================================
-# CONFIGURAÇÃO INICIAL DA PÁGINA
-# ==========================================
-st.set_page_config(page_title="App de Topografia & Relevo", page_icon="⛰️", layout="wide")
+style = {'description_width': 'initial'}
 
-# Inicialização de Variáveis de Estado
-if 'df_1m' not in st.session_state:
-    st.session_state.df_1m = None
-if 'df_resumo' not in st.session_state:
-    st.session_state.df_resumo = None
-if 'nome_base' not in st.session_state:
-    st.session_state.nome_base = ""
+# Campos de entrada de dados
+via_prin_input = widgets.FloatText(value=10.0, description='Largura Via Principal (m):', style=style)
+via_sec_input = widgets.FloatText(value=8.0, description='Largura Via Secundária (m):', style=style)
+canteiro_input = widgets.FloatText(value=10.0, description='Largura Canteiro (m):', style=style)
+dist_eixos_input = widgets.FloatText(value=6.0, description='Distância entre Eixos (m):', style=style)
+largura_veic_input = widgets.FloatText(value=2.6, description='Largura do Veículo (m):', style=style)
 
-# ==========================================
-# FUNÇÕES DE PROCESSAMENTO E BACKEND
-# ==========================================
-def obter_elevacoes_reais(lats, lons, lote=20):
-    elevacoes = []
-    progress_bar = st.progress(0)
-    total_lotes = (len(lats) // lote) + 1
-    
-    for i in range(0, len(lats), lote):
-        batch_lat = lats[i:i+lote]
-        batch_lon = lons[i:i+lote]
-        lat_str = ",".join(map(str, batch_lat))
-        lon_str = ",".join(map(str, batch_lon))
-        url = f"https://api.open-meteo.com/v1/elevation?latitude={lat_str}&longitude={lon_str}"
-        sucesso = False
-        tentativas = 0
-        
-        while not sucesso and tentativas < 5:
-            try:
-                resp = requests.get(url, timeout=10)
-                if resp.status_code == 429:
-                    espera = (2 ** tentativas) + 5
-                    st.toast(f"Limite da API atingido. Aguardando {espera}s...", icon="⏳")
-                    time.sleep(espera)
-                    tentativas += 1
-                    continue
-                resp.raise_for_status()
-                data = resp.json()
-                if 'elevation' in data:
-                    elevacoes.extend(data['elevation'])
-                    sucesso = True
-                else:
-                    elevacoes.extend([0.0] * len(batch_lat))
-                    sucesso = True
-            except Exception as e:
-                tentativas += 1
-                time.sleep(3)
-                
-        if not sucesso:
-            elevacoes.extend([0.0] * len(batch_lat))
-        time.sleep(1.0)
-        progress_bar.progress(min((i // lote + 1) / total_lotes, 1.0))
-        
-    progress_bar.empty()
-    return elevacoes
+# Estado global para armazenar os dados do último relatório gerado
+estado_relatorio = {
+    "texto": [],
+    "imagem": "tractrix_plot.png"
+}
 
-def processar_kml_denso(conteudo_kml):
-    soup = BeautifulSoup(conteudo_kml, 'xml')
-    dados_1m, resumos = [], []
-    
-    placemarks = soup.find_all('Placemark')
-    for placemark in placemarks:
-        nome = placemark.find('name').text if placemark.find('name') else 'Eixo_Desconhecido'
-        linha = placemark.find('LineString')
-        if not linha:
-            linha = placemark.find('geometryCollection') or placemark.find('MultiGeometry')
-        linha_string = placemark.find('LineString')
-        if not linha_string: continue
+# Botões de comando
+calc_button = widgets.Button(description='Processar Simulação', button_style='success')
+reset_button = widgets.Button(description='Limpar / Reset', button_style='danger')
+btn_docx = widgets.Button(description='Baixar DOCX', button_style='primary', disabled=True, icon='file-word-o')
+btn_pdf = widgets.Button(description='Baixar PDF', button_style='info', disabled=True, icon='file-pdf-o')
+
+output = widgets.Output()
+
+def plot_tractrix(b):
+    with output:
+        clear_output()
+        btn_docx.disabled = True
+        btn_pdf.disabled = True
         
-        coords_text = linha_string.find('coordinates').text.strip()
-        coords = [c.split(',') for c in coords_text.split() if len(c.split(',')) >= 2]
-        if len(coords) < 2: continue
+        vp = via_prin_input.value
+        vs = via_sec_input.value
+        ct = canteiro_input.value
+        a = dist_eixos_input.value
+        lv = largura_veic_input.value
         
-        lats_orig = [float(c[1]) for c in coords]
-        lons_orig = [float(c[0]) for c in coords]
+        data_atual = datetime.now().strftime("%d/%m/%Y %H:%M")
         
-        has_altitude = all(len(c) >= 3 for c in coords)
-        alts_orig = [float(c[2]) for c in coords] if has_altitude else [0.0] * len(coords)
+        # --- CÁLCULOS FÍSICOS E DIMENSIONAIS ---
+        theta_45 = 0.785
+        tanh_45 = np.tanh(theta_45)
+        cosh_45 = np.cosh(theta_45)
         
-        dists_orig = [0.0]
-        for i in range(1, len(coords)):
-            pt_ant, pt_atual = (lats_orig[i-1], lons_orig[i-1]), (lats_orig[i], lons_orig[i])
-            dists_orig.append(dists_orig[-1] + geodesic(pt_ant, pt_atual).meters)
-        dist_max = dists_orig[-1]
+        x_45 = a * (theta_45 - tanh_45) + vs/2
+        y_45 = a / cosh_45 + vp/2
+        x_interno_45 = x_45 - (lv/2)
         
-        estacas = np.arange(0, dist_max + 1, 1.0)
-        if estacas[-1] != dist_max: estacas = np.append(estacas, dist_max)
+        arraste_max = a * (1.57 - np.tanh(1.57)) 
+        arraste_real = a - (a / np.cosh(1.57)) 
+        largura_varredura = lv + arraste_real
         
-        lats_1m = np.interp(estacas, dists_orig, lats_orig)
-        lons_1m = np.interp(estacas, dists_orig, lons_orig)
+        # --- PLOTAGEM DO GRÁFICO ---
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.set_title("Trajetória de Conversão - Curva Tractrix (IPR 740)")
         
-        if not has_altitude or all(a == 0.0 for a in alts_orig):
-            st.info(f"Buscando altitudes online para o trecho '{nome}' via Open-Meteo...")
-            elev_1m = np.array(obter_elevacoes_reais(lats_1m, lons_1m))
+        ax.axhline(0, color='black', linewidth=2, label='Bordo Externo (Via Principal)')
+        ax.axhline(vp, color='gray', linestyle='--', label='Bordo Interno (Via Principal)')
+        ax.axhline(vp + ct, color='green', linewidth=4, label='Canteiro Central')
+        
+        ax.axvline(0, color='blue', linewidth=2, label='Bordo Externo (Via Secundária)')
+        ax.axvline(vs, color='lightblue', linestyle='--', label='Bordo Interno (Via Secundária)')
+        
+        theta = np.linspace(0.01, np.pi/2, 100)
+        x_tractrix = a * (theta - np.tanh(theta)) + vs/2
+        y_tractrix = a / np.cosh(theta) + vp/2
+        
+        x_externo = x_tractrix + (lv / 2)
+        x_interno = x_tractrix - (lv / 2)
+        
+        ax.plot(x_tractrix, y_tractrix, color='red', linewidth=2, label='Eixo Central do Veículo')
+        ax.plot(x_externo, y_tractrix, color='orange', linestyle=':', label='Gabarito Externo')
+        ax.plot(x_interno, y_tractrix, color='orange', linestyle=':', label='Gabarito Interno')
+        
+        ax.set_xlim(-5, vs + 15)
+        ax.set_ylim(-5, vp + ct + 5)
+        ax.set_aspect('equal', adjustable='box')
+        ax.grid(True, linestyle=':', alpha=0.6)
+        ax.legend(loc='upper right', bbox_to_anchor=(1.35, 1))
+        plt.tight_layout()
+        
+        # Salvar imagem temporária para o relatório
+        fig.savefig(estado_relatorio["imagem"], dpi=150, bbox_inches='tight')
+        plt.show()
+
+        # --- ARMAZENAMENTO E EXIBIÇÃO DOS RESULTADOS ---
+        linhas_relatorio = [
+            f"RELATÓRIO DE DIMENSIONAMENTO E GABARITOS DE GIRO | Gerado em: {data_atual}",
+            "="*70,
+            f"-> PONTO CRÍTICO DA CURVA (45 graus):",
+            f"   Coordenada X (Avanço na Via Secundária): {x_45:.2f} m",
+            f"   Coordenada Y (Avanço na Via Principal): {y_45:.2f} m",
+            f"   Bordo Interno do Veículo (Eixo X): {x_interno_45:.2f} m",
+            "",
+            f"-> ANÁLISE DE ARRASTE E VARREDURA:",
+            f"   Largura da Varredura (Faixa Consumida pelo Veículo): ~{largura_varredura:.2f} m",
+            "",
+            f"-> DIRETRIZES FÍSICAS RECOMENDADAS PARA O PROJETO:",
+            f"   Raio de Concordância da Esquina (Meio-Fio): Mínimo 9.0 m a 12.0 m",
+            f"   Recuo do Canteiro Central: 2.0 m a 3.0 m antes do prolongamento da via transversal",
+            ""
+        ]
+        
+        if x_interno_45 < (vs/2):
+            linhas_relatorio.extend([
+                "   [ALERTA DE SEGURANÇA]: A traseira invade a faixa oposta da via secundária!",
+                "   Recuo sugerido para linha de retenção de semáforo: Mínimo 4.0 m da interseção."
+            ])
         else:
-            st.success(f"Usando altitudes nativas do KML para o trecho '{nome}'!")
-            elev_1m = np.interp(estacas, dists_orig, alts_orig)
+            linhas_relatorio.append("   [OK]: O veículo consegue realizar a manobra sem invadir a faixa oposta.")
             
-        for e, la, lo, el in zip(estacas, lats_1m, lons_1m, elev_1m):
-            dados_1m.append({'Trecho': nome, 'Estaca (m)': round(e, 2), 'Latitude': la, 'Longitude': lo, 'Cota (m)': round(el, 2)})
+        linhas_relatorio.extend([
+            "="*70,
+            "Nota: Calculado usando o Manual de Projeto Geométrico de Travessias Urbanas, DNIT (2010)."
+        ])
         
-        diffs = np.diff(elev_1m)
-        resumos.append({
-            'Trecho': nome, 
-            'Mín (m)': round(elev_1m.min(), 1), 
-            'Méd (m)': round(elev_1m.mean(), 1), 
-            'Máx (m)': round(elev_1m.max(), 1), 
-            'Distância Total (m)': round(dist_max, 1), 
-            'Ganho Elev (m)': round(diffs[diffs > 0].sum(), 2) if (diffs > 0).any() else 0.0, 
-            'Perda Elev (m)': round(abs(diffs[diffs < 0].sum()), 2) if (diffs < 0).any() else 0.0
-        })
+        estado_relatorio["texto"] = linhas_relatorio
         
-    return pd.DataFrame(dados_1m), pd.DataFrame(resumos)
-
-def renomear_em_lote(novo_nome_base):
-    if st.session_state.df_resumo is not None and novo_nome_base.strip() != "":
-        trechos_antigos = st.session_state.df_resumo['Trecho'].unique()
-        mapa_nomes = {antigo: f"{novo_nome_base} - {i:02d}" for i, enumerate(trechos_antigos, 1)}
-        
-        st.session_state.df_1m['Trecho'] = st.session_state.df_1m['Trecho'].map(mapa_nomes)
-        st.session_state.df_resumo['Trecho'] = st.session_state.df_resumo['Trecho'].map(mapa_nomes)
-        st.success("Trechos renomeados e enumerados com sucesso!")
-
-# ==========================================
-# FUNÇÕES DE PLOTAGEM (PLOTLY E MATPLOTLIB)
-# ==========================================
-def plotar_perfil_plotly(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor, mostrar_cotas):
-    fig = go.Figure()
-    
-    # 1. Linha do Relevo
-    fig.add_trace(go.Scatter(
-        x=df_t['Estaca (m)'], 
-        y=df_t['Cota (m)'],
-        mode='lines',
-        line=dict(color=cor, width=espessura),
-        fill='tozeroy',
-        fillcolor=f"rgba{tuple(int(cor.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.15,)}",
-        name='Relevo'
-    ))
-
-    # 2. Bolinhas de Máxima e Mínima
-    idx_max = df_t['Cota (m)'].idxmax()
-    idx_min = df_t['Cota (m)'].idxmin()
-    cota_max = df_t.loc[idx_max]
-    cota_min = df_t.loc[idx_min]
-    
-    fig.add_trace(go.Scatter(
-        x=[cota_max['Estaca (m)'], cota_min['Estaca (m)']],
-        y=[cota_max['Cota (m)'], cota_min['Cota (m)']],
-        mode='markers+text',
-        marker=dict(color=['#0055ff', '#ff0000'], size=10, symbol='circle', line=dict(color='white', width=2)),
-        text=[f"<b>Máx: {cota_max['Cota (m)']}m</b>", f"<b>Mín: {cota_min['Cota (m)']}m</b>"],
-        textposition=["top center", "bottom center"],
-        textfont=dict(size=11, color="black"),
-        name='Máx / Mín',
-        showlegend=False
-    ))
-    
-    stats_text = (f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m<br>"
-                  f"Extensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m")
-
-    # Configuração do Eixo Y (Horizontal lines)
-    yaxis_config = dict(
-        dtick=grid_y_princ, 
-        minor=dict(dtick=grid_y_sec), 
-        showgrid=True, 
-        gridcolor='lightgray',
-        showticklabels=mostrar_cotas,
-        title="Cota Z (m)" if mostrar_cotas else ""
-    )
-
-    # Configuração do Eixo X (Vertical lines)
-    xaxis_config = dict(
-        dtick=grid_x_princ, 
-        minor=dict(dtick=grid_x_sec), 
-        showgrid=True, 
-        gridcolor='lightgray',
-        title="Distância (m)"
-    )
-
-    fig.update_layout(
-        title=dict(text=f"<b>{row['Trecho'].upper()}</b>", font=dict(size=20), x=0.5),
-        xaxis=xaxis_config,
-        yaxis=yaxis_config,
-        template="plotly_white",
-        annotations=[dict(
-            x=0.99, y=0.05, xref='paper', yref='paper',
-            text=stats_text, showarrow=False,
-            bgcolor="rgba(255, 255, 255, 0.8)", bordercolor="black", borderwidth=1,
-            xanchor='right', yanchor='bottom'
-        )],
-        margin=dict(l=40, r=40, t=60, b=40)
-    )
-    return fig
-
-def plotar_perfil_matplotlib(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor, mostrar_cotas):
-    distancia = row['Distância Total (m)']
-    largura_dinamica = max(8, min(40, distancia * 0.15))
-    fig, ax = plt.subplots(figsize=(largura_dinamica, 6))
-
-    ax.plot(df_t['Estaca (m)'], df_t['Cota (m)'], color=cor, linewidth=espessura)
-    ax.fill_between(df_t['Estaca (m)'], df_t['Cota (m)'], df_t['Cota (m)'].min() - 5, color=cor, alpha=0.15)
-
-    idx_max = df_t['Cota (m)'].idxmax()
-    idx_min = df_t['Cota (m)'].idxmin()
-    cmax, cmin = df_t.loc[idx_max], df_t.loc[idx_min]
-    
-    ax.scatter([cmax['Estaca (m)']], [cmax['Cota (m)']], color='#0055ff', s=70, zorder=5, edgecolors='white', linewidth=1.5)
-    ax.scatter([cmin['Estaca (m)']], [cmin['Cota (m)']], color='#ff0000', s=70, zorder=5, edgecolors='white', linewidth=1.5)
-    
-    ax.annotate(f"Máx: {cmax['Cota (m)']}m", (cmax['Estaca (m)'], cmax['Cota (m)']), textcoords="offset points", xytext=(0,10), ha='center', fontsize=9, fontweight='bold')
-    ax.annotate(f"Mín: {cmin['Cota (m)']}m", (cmin['Estaca (m)'], cmin['Cota (m)']), textcoords="offset points", xytext=(0,-15), ha='center', fontsize=9, fontweight='bold')
-
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(grid_x_princ))
-    ax.xaxis.set_minor_locator(ticker.MultipleLocator(grid_x_sec))
-    
-    if mostrar_cotas:
-        ax.yaxis.set_major_locator(ticker.MultipleLocator(grid_y_princ))
-        ax.yaxis.set_minor_locator(ticker.MultipleLocator(grid_y_sec))
-        ax.set_ylabel('Cota Z (m)')
-    else:
-        ax.yaxis.set_ticklabels([])
-        ax.yaxis.set_ticks_position('none')
-
-    ax.grid(True, which='major', linestyle='-', color='#cccccc', alpha=0.7)
-    ax.grid(True, which='minor', linestyle=':', color='#e0e0e0', alpha=0.5)
-    ax.minorticks_on()
-
-    ax.set_title(row['Trecho'].upper(), fontsize=14, fontweight='bold', pad=20)
-    stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
-    plt.text(0.99, 0.05, stats_text, transform=ax.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    ax.set_xlabel('Distância (m)')
-    plt.tight_layout()
-    return fig
-
-# ==========================================
-# INTERFACE DO USUÁRIO
-# ==========================================
-st.title("🗺️ Extrator e Gerador de Perfil Topográfico")
-
-st.header("1. Upload de Arquivo")
-uploaded_file = st.file_uploader("Carregue seu KML ou KMZ", type=['kml', 'kmz'])
-
-if uploaded_file is not None:
-    if st.button("▶️ Processar Arquivo", type="primary"):
-        with st.spinner("Analisando o arquivo e extraindo relevo..."):
-            file_name = uploaded_file.name
-            st.session_state.nome_base = file_name.rsplit('.', 1)[0]
-            try:
-                if file_name.lower().endswith('.kmz'):
-                    with zipfile.ZipFile(uploaded_file, 'r') as kmz:
-                        kml_name = [n for n in kmz.namelist() if n.endswith('.kml')][0]
-                        kml_content = kmz.read(kml_name)
-                else:
-                    kml_content = uploaded_file.read()
-                    
-                df_1m, df_resumo = processar_kml_denso(kml_content)
-                st.session_state.df_1m = df_1m
-                st.session_state.df_resumo = df_resumo
-                st.success("Relevo extraído e densificado com sucesso!")
-            except Exception as e:
-                st.error(f"Erro no processamento do arquivo: {e}")
-
-if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
-    st.divider()
-    
-    col_sidebar, col_main = st.columns([1, 4])
-    
-    with col_sidebar:
-        st.header("2. Ajustes Visuais")
-        
-        st.markdown("#### Gestão de Trechos")
-        novo_lote = st.text_input("Renomear por lote (Ex: Lote A):")
-        if st.button("Aplicar Renomeação Sequencial", use_container_width=True):
-            renomear_em_lote(novo_lote)
-        
-        trechos_disponiveis = st.session_state.df_resumo['Trecho'].unique().tolist()
-        trecho_selecionado = st.selectbox("Selecione o Trecho para visualizar:", trechos_disponiveis)
-        
-        st.markdown("---")
-        st.markdown("#### Estilo da Linha")
-        cor_grafico = st.color_picker("Cor do Relevo:", "#1c832a")
-        
-        st.markdown("---")
-        st.markdown("#### Ajustes de Medidas (Grid)")
-        
-        # 1. Botão de ativar/desativar as cotas em destaque no topo
-        mostrar_cotas = st.toggle("Exibir Cotas Laterais (Min/Máx)", value=True, help="Mostra ou oculta as elevações no eixo Y.")
-        
-        # 2. Divisão das configurações em duas colunas lado a lado
-        col_grid_y, col_grid_x = st.columns(2)
-        
-        with col_grid_y:
-            st.markdown("**Horizontais (Y):**")
-            grid_y_princ = st.slider("Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0, key='gy_p')
-            grid_y_sec = st.slider("Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5, key='gy_s')
-
-        with col_grid_x:
-            st.markdown("**Verticais (X):**")
-            grid_x_princ = st.slider("Principal (m):", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key='gx_p')
-            grid_x_sec = st.slider("Secundário (m):", min_value=0.5, max_value=50.0, value=5.0, step=0.5, key='gx_s')
-
-    with col_main:
-        st.header("3. Prévia Interativa (Plotly)")
-        
-        container_grafico = st.container()
-        container_controles_inferiores = st.container()
-        
-        with container_controles_inferiores:
-            st.markdown("<br>", unsafe_allow_html=True)
-            espessura_linha = st.slider("Espessura da Linha do Relevo:", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+        for linha in linhas_relatorio:
+            print(linha)
             
-        with container_grafico:
-            df_trecho = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == trecho_selecionado]
-            row_resumo = st.session_state.df_resumo[st.session_state.df_resumo['Trecho'] == trecho_selecionado].iloc[0]
-            
-            fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
-            st.plotly_chart(fig_interativa, use_container_width=True)
+        # Habilitar botões de download após o cálculo
+        btn_docx.disabled = False
+        btn_pdf.disabled = False
 
-    st.divider()
-    st.header("4. Exportação Profissional")
+def reset_fields(b):
+    via_prin_input.value = 10.0
+    via_sec_input.value = 8.0
+    canteiro_input.value = 10.0
+    dist_eixos_input.value = 6.0
+    largura_veic_input.value = 2.6
+    btn_docx.disabled = True
+    btn_pdf.disabled = True
+    with output:
+        clear_output()
+        print("\n--- Parâmetros resetados. Aguardando processamento... ---")
+
+def gerar_docx(b):
+    doc = docx.Document()
+    doc.add_heading('Relatório Simulador de Curva 0ff Track', 0)
+    for linha in estado_relatorio["texto"]:
+        doc.add_paragraph(linha)
+    if os.path.exists(estado_relatorio["imagem"]):
+        doc.add_picture(estado_relatorio["imagem"], width=Inches(5.5))
     
-    if st.button("📦 Gerar & Exportar Pacote ZIP", type="primary"):
-        with st.spinner("Compilando relatórios e renderizando imagens estáticas..."):
-            zip_buffer = io.BytesIO()
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                excel_path = os.path.join(tmpdirname, f"topografia_{st.session_state.nome_base}.xlsx")
-                st.session_state.df_resumo.to_excel(excel_path, index=False)
-                
-                doc = Document()
-                doc.add_heading(f'Relatório de Topografia: {st.session_state.nome_base}', 0)
-                pdf = FPDF()
-                
-                pasta_img = os.path.join(tmpdirname, "perfis_exportados")
-                os.makedirs(pasta_img, exist_ok=True)
-                
-                for _, row in st.session_state.df_resumo.iterrows():
-                    t = row['Trecho']
-                    df_t = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == t]
-                    
-                    fig_estatica = plotar_perfil_matplotlib(df_t, row, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
-                    img_name = f"{t.replace('/', '_')}.png"
-                    img_path = os.path.join(pasta_img, img_name)
-                    fig_estatica.savefig(img_path, dpi=120, bbox_inches='tight')
-                    plt.close(fig_estatica)
-                    
-                    doc.add_heading(t.upper(), level=1)
-                    stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
-                    doc.add_paragraph(stats_text)
-                    doc.add_picture(img_path, width=Inches(6.0))
-                    
-                    largura_dinamica = max(8, min(40, row['Distância Total (m)'] * 0.15))
-                    pdf.add_page(orientation='L' if largura_dinamica > 15 else 'P')
-                    pdf.set_font("Arial", "B", 16)
-                    pdf.cell(0, 10, t.upper(), ln=True)
-                    pdf.set_font("Arial", "", 10)
-                    pdf.multi_cell(0, 5, stats_text)
-                    pdf_img_w = min(270 if largura_dinamica > 15 else 190, largura_dinamica * 12)
-                    pdf.image(img_path, x=10, w=pdf_img_w)
+    filename = 'Relatorio_Simulador_Curva_0ff_Track.docx'
+    doc.save(filename)
+    if IN_COLAB:
+        files.download(filename)
+        
+def gerar_pdf(b):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=10)
+    for linha in estado_relatorio["texto"]:
+        # Substituindo caracteres não suportados pelo Latin-1 nativo do FPDF
+        texto_limpo = linha.encode('latin-1', 'replace').decode('latin-1')
+        pdf.cell(0, 6, txt=texto_limpo, ln=True)
+        
+    if os.path.exists(estado_relatorio["imagem"]):
+        pdf.image(estado_relatorio["imagem"], x=15, y=None, w=170)
+        
+    filename = 'Relatorio_Simulador_Curva_0ff_Track.pdf'
+    pdf.output(filename)
+    if IN_COLAB:
+        files.download(filename)
 
-                doc_path = os.path.join(tmpdirname, f"Relatorio_{st.session_state.nome_base}.docx")
-                pdf_path = os.path.join(tmpdirname, f"Relatorio_{st.session_state.nome_base}.pdf")
-                doc.save(doc_path)
-                pdf.output(pdf_path)
-                
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(excel_path, os.path.basename(excel_path))
-                    zf.write(doc_path, os.path.basename(doc_path))
-                    zf.write(pdf_path, os.path.basename(pdf_path))
-                    for root, _, files in os.walk(pasta_img):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            zf.write(file_path, os.path.join("perfis_exportados", file))
-            
-            zip_buffer.seek(0)
-            
-            st.success("Pacote gerado com sucesso!")
-            st.download_button(
-                label="📥 Baixar Pacote Completo (.ZIP)",
-                data=zip_buffer,
-                file_name=f"exportacao_customizada_{st.session_state.nome_base}.zip",
-                mime="application/zip",
-                type="primary",
-                use_container_width=True
-            )
+calc_button.on_click(plot_tractrix)
+reset_button.on_click(reset_fields)
+btn_docx.on_click(gerar_docx)
+btn_pdf.on_click(gerar_pdf)
+
+# Construção do painel 
+ui = widgets.VBox([
+    widgets.HTML("<h4>Simulador de Curva 0ff Track - Controle de Dimensões Viárias</h4>"),
+    via_prin_input, via_sec_input, canteiro_input, dist_eixos_input, largura_veic_input,
+    widgets.HBox([calc_button, reset_button]),
+    widgets.HTML("<hr><b>Exportar Memorial Descritivo:</b>"),
+    widgets.HBox([btn_docx, btn_pdf]),
+    output
+])
+
+display(ui)
 
 st.markdown("<p style='text-align: center; color: gray; font-size: 12px;'>código atualizado 17/11/2026  -  by @redmargoth</p>", unsafe_allow_html=True)
