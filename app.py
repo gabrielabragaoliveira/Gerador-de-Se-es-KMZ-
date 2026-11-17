@@ -136,7 +136,7 @@ def processar_kml_denso(conteudo_kml):
 def renomear_em_lote(novo_nome_base):
     if st.session_state.df_resumo is not None and novo_nome_base.strip() != "":
         trechos_antigos = st.session_state.df_resumo['Trecho'].unique()
-        mapa_nomes = {antigo: f"{novo_nome_base} - {i:02d}" for i, antigo in enumerate(trechos_antigos, 1)}
+        mapa_nomes = {antigo: f"{novo_nome_base} - {i:02d}" for i, enumerate(trechos_antigos, 1)}
         
         st.session_state.df_1m['Trecho'] = st.session_state.df_1m['Trecho'].map(mapa_nomes)
         st.session_state.df_resumo['Trecho'] = st.session_state.df_resumo['Trecho'].map(mapa_nomes)
@@ -200,7 +200,7 @@ def plotar_perfil_plotly(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_
     )
 
     fig.update_layout(
-        title=dict(text=f"<b>{row['Trecho'].upper()}</b>", font=dict(size=20), x=0.5), # Título centralizado
+        title=dict(text=f"<b>{row['Trecho'].upper()}</b>", font=dict(size=20), x=0.5),
         xaxis=xaxis_config,
         yaxis=yaxis_config,
         template="plotly_white",
@@ -222,7 +222,6 @@ def plotar_perfil_matplotlib(df_t, row, espessura, grid_x_sec, grid_x_princ, gri
     ax.plot(df_t['Estaca (m)'], df_t['Cota (m)'], color=cor, linewidth=espessura)
     ax.fill_between(df_t['Estaca (m)'], df_t['Cota (m)'], df_t['Cota (m)'].min() - 5, color=cor, alpha=0.15)
 
-    # Adiciona as bolinhas no PDF/Word
     idx_max = df_t['Cota (m)'].idxmax()
     idx_min = df_t['Cota (m)'].idxmin()
     cmax, cmin = df_t.loc[idx_max], df_t.loc[idx_min]
@@ -303,29 +302,42 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
         st.markdown("---")
         st.markdown("#### Estilo da Linha")
         cor_grafico = st.color_picker("Cor do Relevo:", "#1c832a")
-        espessura_linha = st.slider("Espessura da Linha:", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
         
         st.markdown("---")
         st.markdown("#### Ajustes de Medidas (Grid)")
+        
+        # 1. Botão de ativar/desativar as cotas em destaque no topo
         mostrar_cotas = st.toggle("Exibir Cotas Laterais (Min/Máx)", value=True, help="Mostra ou oculta as elevações no eixo Y.")
         
-        # Grid Y (Linhas Horizontais / Altura)
-        st.markdown("**Linhas Horizontais (Elevação Y):**")
-        grid_y_princ = st.slider("Intervalo Grid Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0, key='gy_p')
-        grid_y_sec = st.slider("Intervalo Grid Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5, key='gy_s')
+        # 2. Divisão das configurações em duas colunas lado a lado
+        col_grid_y, col_grid_x = st.columns(2)
+        
+        with col_grid_y:
+            st.markdown("**Horizontais (Y):**")
+            grid_y_princ = st.slider("Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0, key='gy_p')
+            grid_y_sec = st.slider("Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5, key='gy_s')
 
-        # Grid X (Linhas Verticais / Distância)
-        st.markdown("**Linhas Verticais (Distância X):**")
-        grid_x_princ = st.slider("Intervalo Grid Principal (m):", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key='gx_p')
-        grid_x_sec = st.slider("Intervalo Grid Secundário (m):", min_value=0.5, max_value=50.0, value=5.0, step=0.5, key='gx_s')
+        with col_grid_x:
+            st.markdown("**Verticais (X):**")
+            grid_x_princ = st.slider("Principal (m):", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key='gx_p')
+            grid_x_sec = st.slider("Secundário (m):", min_value=0.5, max_value=50.0, value=5.0, step=0.5, key='gx_s')
 
     with col_main:
         st.header("3. Prévia Interativa (Plotly)")
-        df_trecho = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == trecho_selecionado]
-        row_resumo = st.session_state.df_resumo[st.session_state.df_resumo['Trecho'] == trecho_selecionado].iloc[0]
         
-        fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
-        st.plotly_chart(fig_interativa, use_container_width=True)
+        container_grafico = st.container()
+        container_controles_inferiores = st.container()
+        
+        with container_controles_inferiores:
+            st.markdown("<br>", unsafe_allow_html=True)
+            espessura_linha = st.slider("Espessura da Linha do Relevo:", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+            
+        with container_grafico:
+            df_trecho = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == trecho_selecionado]
+            row_resumo = st.session_state.df_resumo[st.session_state.df_resumo['Trecho'] == trecho_selecionado].iloc[0]
+            
+            fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
+            st.plotly_chart(fig_interativa, use_container_width=True)
 
     st.divider()
     st.header("4. Exportação Profissional")
@@ -393,3 +405,5 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
                 type="primary",
                 use_container_width=True
             )
+
+st.markdown("<p style='text-align: center; color: gray; font-size: 12px;'>código atualizado 17/11/2026  -  by @redmargoth</p>", unsafe_allow_html=True)
