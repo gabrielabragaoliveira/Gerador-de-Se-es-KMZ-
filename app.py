@@ -21,7 +21,7 @@ import plotly.graph_objects as go
 # ==========================================
 st.set_page_config(page_title="App de Topografia & Relevo", page_icon="⛰️", layout="wide")
 
-# Inicialização de Variáveis de Estado (Memória do Streamlit)
+# Inicialização de Variáveis de Estado
 if 'df_1m' not in st.session_state:
     st.session_state.df_1m = None
 if 'df_resumo' not in st.session_state:
@@ -133,13 +133,21 @@ def processar_kml_denso(conteudo_kml):
         
     return pd.DataFrame(dados_1m), pd.DataFrame(resumos)
 
+def renomear_em_lote(novo_nome_base):
+    if st.session_state.df_resumo is not None and novo_nome_base.strip() != "":
+        trechos_antigos = st.session_state.df_resumo['Trecho'].unique()
+        mapa_nomes = {antigo: f"{novo_nome_base} - {i:02d}" for i, antigo in enumerate(trechos_antigos, 1)}
+        
+        st.session_state.df_1m['Trecho'] = st.session_state.df_1m['Trecho'].map(mapa_nomes)
+        st.session_state.df_resumo['Trecho'] = st.session_state.df_resumo['Trecho'].map(mapa_nomes)
+        st.success("Trechos renomeados e enumerados com sucesso!")
+
 # ==========================================
-# FUNÇÕES DE PLOTAGEM E EXPORTAÇÃO
+# FUNÇÕES DE PLOTAGEM (PLOTLY E MATPLOTLIB)
 # ==========================================
-def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor):
+def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor, mostrar_cotas):
     fig = go.Figure()
     
-    # Plotagem da linha com área preenchida
     fig.add_trace(go.Scatter(
         x=df_t['Estaca (m)'], 
         y=df_t['Cota (m)'],
@@ -153,12 +161,21 @@ def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor):
     stats_text = (f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m<br>"
                   f"Extensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m")
 
+    # Configuração de exibição das cotas (eixo Y)
+    yaxis_config = dict(
+        dtick=grid_princ, 
+        minor=dict(dtick=grid_sec), 
+        showgrid=True, 
+        gridcolor='lightgray',
+        showticklabels=mostrar_cotas,
+        title="Cota Z (m)" if mostrar_cotas else ""
+    )
+
     fig.update_layout(
-        title=dict(text=f"<b>{row['Trecho'].upper()}</b>", font=dict(size=20)),
+        title=dict(text=f"<b>{row['Trecho'].upper()}</b>", font=dict(size=20), x=0.5), # Título centralizado
         xaxis_title="Distância (m)",
-        yaxis_title="Cota Z (m)",
         xaxis=dict(dtick=grid_princ, minor=dict(dtick=grid_sec), showgrid=True, gridcolor='lightgray'),
-        yaxis=dict(dtick=grid_princ, minor=dict(dtick=grid_sec), showgrid=True, gridcolor='lightgray'),
+        yaxis=yaxis_config,
         template="plotly_white",
         annotations=[dict(
             x=0.99, y=0.05, xref='paper', yref='paper',
@@ -170,7 +187,7 @@ def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor):
     )
     return fig
 
-def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor):
+def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor, mostrar_cotas):
     distancia = row['Distância Total (m)']
     largura_dinamica = max(8, min(40, distancia * 0.15))
     fig, ax = plt.subplots(figsize=(largura_dinamica, 6))
@@ -180,8 +197,14 @@ def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor):
 
     ax.xaxis.set_major_locator(ticker.MultipleLocator(grid_princ))
     ax.xaxis.set_minor_locator(ticker.MultipleLocator(grid_sec))
-    ax.yaxis.set_major_locator(ticker.MultipleLocator(grid_princ))
-    ax.yaxis.set_minor_locator(ticker.MultipleLocator(grid_sec))
+    
+    if mostrar_cotas:
+        ax.yaxis.set_major_locator(ticker.MultipleLocator(grid_princ))
+        ax.yaxis.set_minor_locator(ticker.MultipleLocator(grid_sec))
+        ax.set_ylabel('Cota Z (m)')
+    else:
+        ax.yaxis.set_ticklabels([])
+        ax.yaxis.set_ticks_position('none')
 
     ax.grid(True, which='major', linestyle='-', color='#cccccc', alpha=0.7)
     ax.grid(True, which='minor', linestyle=':', color='#e0e0e0', alpha=0.5)
@@ -191,7 +214,6 @@ def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor):
     stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
     plt.text(0.99, 0.05, stats_text, transform=ax.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-    ax.set_ylabel('Cota Z (m)')
     ax.set_xlabel('Distância (m)')
     plt.tight_layout()
     return fig
@@ -200,9 +222,7 @@ def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor):
 # INTERFACE DO USUÁRIO
 # ==========================================
 st.title("🗺️ Extrator e Gerador de Perfil Topográfico")
-st.markdown("Faça o upload do seu arquivo **.KML** ou **.KMZ**. O aplicativo irá extrair coordenadas, calcular distâncias geodésicas e buscar altitudes precisas para traçar o perfil longitudinal.")
 
-# Etapa 1: Upload
 st.header("1. Upload de Arquivo")
 uploaded_file = st.file_uploader("Carregue seu KML ou KMZ", type=['kml', 'kmz'])
 
@@ -211,7 +231,6 @@ if uploaded_file is not None:
         with st.spinner("Analisando o arquivo e extraindo relevo..."):
             file_name = uploaded_file.name
             st.session_state.nome_base = file_name.rsplit('.', 1)[0]
-            
             try:
                 if file_name.lower().endswith('.kmz'):
                     with zipfile.ZipFile(uploaded_file, 'r') as kmz:
@@ -221,27 +240,38 @@ if uploaded_file is not None:
                     kml_content = uploaded_file.read()
                     
                 df_1m, df_resumo = processar_kml_denso(kml_content)
-                
                 st.session_state.df_1m = df_1m
                 st.session_state.df_resumo = df_resumo
                 st.success("Relevo extraído e densificado com sucesso!")
             except Exception as e:
                 st.error(f"Erro no processamento do arquivo: {e}")
 
-# Etapa 2 e 3: Customização e Exportação (Só aparece após processamento)
 if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
     st.divider()
     
-    col_sidebar, col_main = st.columns([1, 3])
+    # Proporção ajustada para dar mais destaque ao gráfico (1 para barra lateral, 4 para o gráfico)
+    col_sidebar, col_main = st.columns([1, 4])
     
     with col_sidebar:
         st.header("2. Ajustes Visuais")
-        trechos_disponiveis = st.session_state.df_resumo['Trecho'].unique().tolist()
-        trecho_selecionado = st.selectbox("Selecione o Trecho/Eixo:", trechos_disponiveis)
         
-        st.markdown("#### Configurações do Gráfico")
-        cor_grafico = st.color_picker("Cor da Linha e Relevo:", "#a30000")
+        # Bloco de Renomeação em Lote
+        st.markdown("#### Gestão de Trechos")
+        novo_lote = st.text_input("Renomear por lote (Ex: Lote A):")
+        if st.button("Aplicar Renomeação Sequencial", use_container_width=True):
+            renomear_em_lote(novo_lote)
+        
+        trechos_disponiveis = st.session_state.df_resumo['Trecho'].unique().tolist()
+        trecho_selecionado = st.selectbox("Selecione o Trecho para visualizar:", trechos_disponiveis)
+        
+        st.markdown("---")
+        st.markdown("#### Estilo da Linha")
+        cor_grafico = st.color_picker("Cor do Relevo:", "#1c832a")
         espessura_linha = st.slider("Espessura da Linha:", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+        
+        st.markdown("---")
+        st.markdown("#### Ajustes de Medidas (Grid)")
+        mostrar_cotas = st.toggle("Exibir Cotas Laterais (Min/Máx)", value=True, help="Mostra ou oculta as elevações no eixo Y.")
         grid_principal = st.slider("Intervalo Grid Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0)
         grid_secundario = st.slider("Intervalo Grid Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
 
@@ -250,23 +280,19 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
         df_trecho = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == trecho_selecionado]
         row_resumo = st.session_state.df_resumo[st.session_state.df_resumo['Trecho'] == trecho_selecionado].iloc[0]
         
-        fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_secundario, grid_principal, cor_grafico)
+        fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_secundario, grid_principal, cor_grafico, mostrar_cotas)
         st.plotly_chart(fig_interativa, use_container_width=True)
 
     st.divider()
     st.header("4. Exportação Profissional")
-    st.markdown("Gere um pacote completo `.ZIP` contendo a planilha de dados, relatório descritivo em Word, PDF executivo e as imagens em alta resolução de todos os trechos.")
     
-    if st.button("📦 Gerar & Exportar Pacote ZIP", type="primary", use_container_width=True):
-        with st.spinner("Compilando relatórios e renderizando imagens estáticas. Isso pode levar alguns instantes..."):
+    if st.button("📦 Gerar & Exportar Pacote ZIP", type="primary"):
+        with st.spinner("Compilando relatórios e renderizando imagens estáticas..."):
             zip_buffer = io.BytesIO()
-            
             with tempfile.TemporaryDirectory() as tmpdirname:
-                # 1. Excel
                 excel_path = os.path.join(tmpdirname, f"topografia_{st.session_state.nome_base}.xlsx")
                 st.session_state.df_resumo.to_excel(excel_path, index=False)
                 
-                # Prepara Word e PDF
                 doc = Document()
                 doc.add_heading(f'Relatório de Topografia: {st.session_state.nome_base}', 0)
                 pdf = FPDF()
@@ -274,24 +300,21 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
                 pasta_img = os.path.join(tmpdirname, "perfis_exportados")
                 os.makedirs(pasta_img, exist_ok=True)
                 
-                # Gera Imagens com Matplotlib (Para garantir qualidade estática no PDF/Word)
                 for _, row in st.session_state.df_resumo.iterrows():
                     t = row['Trecho']
                     df_t = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == t]
                     
-                    fig_estatica = plotar_perfil_matplotlib(df_t, row, espessura_linha, grid_secundario, grid_principal, cor_grafico)
+                    fig_estatica = plotar_perfil_matplotlib(df_t, row, espessura_linha, grid_secundario, grid_principal, cor_grafico, mostrar_cotas)
                     img_name = f"{t.replace('/', '_')}.png"
                     img_path = os.path.join(pasta_img, img_name)
                     fig_estatica.savefig(img_path, dpi=120, bbox_inches='tight')
                     plt.close(fig_estatica)
                     
-                    # Inserção no Word
                     doc.add_heading(t.upper(), level=1)
                     stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
                     doc.add_paragraph(stats_text)
                     doc.add_picture(img_path, width=Inches(6.0))
                     
-                    # Inserção no PDF
                     largura_dinamica = max(8, min(40, row['Distância Total (m)'] * 0.15))
                     pdf.add_page(orientation='L' if largura_dinamica > 15 else 'P')
                     pdf.set_font("Arial", "B", 16)
@@ -301,13 +324,11 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
                     pdf_img_w = min(270 if largura_dinamica > 15 else 190, largura_dinamica * 12)
                     pdf.image(img_path, x=10, w=pdf_img_w)
 
-                # Salva Relatórios
                 doc_path = os.path.join(tmpdirname, f"Relatorio_{st.session_state.nome_base}.docx")
                 pdf_path = os.path.join(tmpdirname, f"Relatorio_{st.session_state.nome_base}.pdf")
                 doc.save(doc_path)
                 pdf.output(pdf_path)
                 
-                # Empacota no ZIP em memória
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(excel_path, os.path.basename(excel_path))
                     zf.write(doc_path, os.path.basename(doc_path))
