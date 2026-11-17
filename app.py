@@ -145,9 +145,10 @@ def renomear_em_lote(novo_nome_base):
 # ==========================================
 # FUNÇÕES DE PLOTAGEM (PLOTLY E MATPLOTLIB)
 # ==========================================
-def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor, mostrar_cotas):
+def plotar_perfil_plotly(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor, mostrar_cotas):
     fig = go.Figure()
     
+    # 1. Linha do Relevo
     fig.add_trace(go.Scatter(
         x=df_t['Estaca (m)'], 
         y=df_t['Cota (m)'],
@@ -157,24 +158,50 @@ def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor, mostra
         fillcolor=f"rgba{tuple(int(cor.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.15,)}",
         name='Relevo'
     ))
+
+    # 2. Bolinhas de Máxima e Mínima
+    idx_max = df_t['Cota (m)'].idxmax()
+    idx_min = df_t['Cota (m)'].idxmin()
+    cota_max = df_t.loc[idx_max]
+    cota_min = df_t.loc[idx_min]
+    
+    fig.add_trace(go.Scatter(
+        x=[cota_max['Estaca (m)'], cota_min['Estaca (m)']],
+        y=[cota_max['Cota (m)'], cota_min['Cota (m)']],
+        mode='markers+text',
+        marker=dict(color=['#0055ff', '#ff0000'], size=10, symbol='circle', line=dict(color='white', width=2)),
+        text=[f"<b>Máx: {cota_max['Cota (m)']}m</b>", f"<b>Mín: {cota_min['Cota (m)']}m</b>"],
+        textposition=["top center", "bottom center"],
+        textfont=dict(size=11, color="black"),
+        name='Máx / Mín',
+        showlegend=False
+    ))
     
     stats_text = (f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m<br>"
                   f"Extensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m")
 
-    # Configuração de exibição das cotas (eixo Y)
+    # Configuração do Eixo Y (Horizontal lines)
     yaxis_config = dict(
-        dtick=grid_princ, 
-        minor=dict(dtick=grid_sec), 
+        dtick=grid_y_princ, 
+        minor=dict(dtick=grid_y_sec), 
         showgrid=True, 
         gridcolor='lightgray',
         showticklabels=mostrar_cotas,
         title="Cota Z (m)" if mostrar_cotas else ""
     )
 
+    # Configuração do Eixo X (Vertical lines)
+    xaxis_config = dict(
+        dtick=grid_x_princ, 
+        minor=dict(dtick=grid_x_sec), 
+        showgrid=True, 
+        gridcolor='lightgray',
+        title="Distância (m)"
+    )
+
     fig.update_layout(
         title=dict(text=f"<b>{row['Trecho'].upper()}</b>", font=dict(size=20), x=0.5), # Título centralizado
-        xaxis_title="Distância (m)",
-        xaxis=dict(dtick=grid_princ, minor=dict(dtick=grid_sec), showgrid=True, gridcolor='lightgray'),
+        xaxis=xaxis_config,
         yaxis=yaxis_config,
         template="plotly_white",
         annotations=[dict(
@@ -187,7 +214,7 @@ def plotar_perfil_plotly(df_t, row, espessura, grid_sec, grid_princ, cor, mostra
     )
     return fig
 
-def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor, mostrar_cotas):
+def plotar_perfil_matplotlib(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor, mostrar_cotas):
     distancia = row['Distância Total (m)']
     largura_dinamica = max(8, min(40, distancia * 0.15))
     fig, ax = plt.subplots(figsize=(largura_dinamica, 6))
@@ -195,12 +222,23 @@ def plotar_perfil_matplotlib(df_t, row, espessura, grid_sec, grid_princ, cor, mo
     ax.plot(df_t['Estaca (m)'], df_t['Cota (m)'], color=cor, linewidth=espessura)
     ax.fill_between(df_t['Estaca (m)'], df_t['Cota (m)'], df_t['Cota (m)'].min() - 5, color=cor, alpha=0.15)
 
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(grid_princ))
-    ax.xaxis.set_minor_locator(ticker.MultipleLocator(grid_sec))
+    # Adiciona as bolinhas no PDF/Word
+    idx_max = df_t['Cota (m)'].idxmax()
+    idx_min = df_t['Cota (m)'].idxmin()
+    cmax, cmin = df_t.loc[idx_max], df_t.loc[idx_min]
+    
+    ax.scatter([cmax['Estaca (m)']], [cmax['Cota (m)']], color='#0055ff', s=70, zorder=5, edgecolors='white', linewidth=1.5)
+    ax.scatter([cmin['Estaca (m)']], [cmin['Cota (m)']], color='#ff0000', s=70, zorder=5, edgecolors='white', linewidth=1.5)
+    
+    ax.annotate(f"Máx: {cmax['Cota (m)']}m", (cmax['Estaca (m)'], cmax['Cota (m)']), textcoords="offset points", xytext=(0,10), ha='center', fontsize=9, fontweight='bold')
+    ax.annotate(f"Mín: {cmin['Cota (m)']}m", (cmin['Estaca (m)'], cmin['Cota (m)']), textcoords="offset points", xytext=(0,-15), ha='center', fontsize=9, fontweight='bold')
+
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(grid_x_princ))
+    ax.xaxis.set_minor_locator(ticker.MultipleLocator(grid_x_sec))
     
     if mostrar_cotas:
-        ax.yaxis.set_major_locator(ticker.MultipleLocator(grid_princ))
-        ax.yaxis.set_minor_locator(ticker.MultipleLocator(grid_sec))
+        ax.yaxis.set_major_locator(ticker.MultipleLocator(grid_y_princ))
+        ax.yaxis.set_minor_locator(ticker.MultipleLocator(grid_y_sec))
         ax.set_ylabel('Cota Z (m)')
     else:
         ax.yaxis.set_ticklabels([])
@@ -249,13 +287,11 @@ if uploaded_file is not None:
 if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
     st.divider()
     
-    # Proporção ajustada para dar mais destaque ao gráfico (1 para barra lateral, 4 para o gráfico)
     col_sidebar, col_main = st.columns([1, 4])
     
     with col_sidebar:
         st.header("2. Ajustes Visuais")
         
-        # Bloco de Renomeação em Lote
         st.markdown("#### Gestão de Trechos")
         novo_lote = st.text_input("Renomear por lote (Ex: Lote A):")
         if st.button("Aplicar Renomeação Sequencial", use_container_width=True):
@@ -272,15 +308,23 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
         st.markdown("---")
         st.markdown("#### Ajustes de Medidas (Grid)")
         mostrar_cotas = st.toggle("Exibir Cotas Laterais (Min/Máx)", value=True, help="Mostra ou oculta as elevações no eixo Y.")
-        grid_principal = st.slider("Intervalo Grid Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0)
-        grid_secundario = st.slider("Intervalo Grid Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
+        
+        # Grid Y (Linhas Horizontais / Altura)
+        st.markdown("**Linhas Horizontais (Elevação Y):**")
+        grid_y_princ = st.slider("Intervalo Grid Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0, key='gy_p')
+        grid_y_sec = st.slider("Intervalo Grid Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5, key='gy_s')
+
+        # Grid X (Linhas Verticais / Distância)
+        st.markdown("**Linhas Verticais (Distância X):**")
+        grid_x_princ = st.slider("Intervalo Grid Principal (m):", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key='gx_p')
+        grid_x_sec = st.slider("Intervalo Grid Secundário (m):", min_value=0.5, max_value=50.0, value=5.0, step=0.5, key='gx_s')
 
     with col_main:
         st.header("3. Prévia Interativa (Plotly)")
         df_trecho = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == trecho_selecionado]
         row_resumo = st.session_state.df_resumo[st.session_state.df_resumo['Trecho'] == trecho_selecionado].iloc[0]
         
-        fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_secundario, grid_principal, cor_grafico, mostrar_cotas)
+        fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
         st.plotly_chart(fig_interativa, use_container_width=True)
 
     st.divider()
@@ -304,7 +348,7 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
                     t = row['Trecho']
                     df_t = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == t]
                     
-                    fig_estatica = plotar_perfil_matplotlib(df_t, row, espessura_linha, grid_secundario, grid_principal, cor_grafico, mostrar_cotas)
+                    fig_estatica = plotar_perfil_matplotlib(df_t, row, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
                     img_name = f"{t.replace('/', '_')}.png"
                     img_path = os.path.join(pasta_img, img_name)
                     fig_estatica.savefig(img_path, dpi=120, bbox_inches='tight')
