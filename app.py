@@ -1,5 +1,3 @@
-!pip install python-docx fpdf -q
-
 import numpy as np
 import matplotlib.pyplot as plt
 import ipywidgets as widgets
