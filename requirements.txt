@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+requests
+geopy
+beautifulsoup4
+lxml
+python-docx
+fpdf2
+plotly
+matplotlib
+openpyxl
