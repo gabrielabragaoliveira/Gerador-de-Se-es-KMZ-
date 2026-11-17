@@ -75,7 +75,7 @@ def obter_elevacoes_reais(lats, lons, lote=20):
     progress_bar.empty()
     return elevacoes
 
-def processar_kml_denso(conteudo_kml):
+def processar_kml_denso(conteudo_kml, densidade_interp=1.0):
     soup = BeautifulSoup(conteudo_kml, 'xml')
     dados_1m, resumos = [], []
     
@@ -104,18 +104,32 @@ def processar_kml_denso(conteudo_kml):
             dists_orig.append(dists_orig[-1] + geodesic(pt_ant, pt_atual).meters)
         dist_max = dists_orig[-1]
         
-        estacas = np.arange(0, dist_max + 1, 1.0)
+        # A densidade determina quão "suave/redonda" a linha fica 
+        # (1.0 = interpola a cada metro, 0.25 = a cada 25cm para curvas perfeitas)
+        estacas = np.arange(0, dist_max + 1, densidade_interp)
         if estacas[-1] != dist_max: estacas = np.append(estacas, dist_max)
         
-        lats_1m = np.interp(estacas, dists_orig, lats_orig)
-        lons_1m = np.interp(estacas, dists_orig, lons_orig)
-        
+        # Interpolação splinesca (cubic) em vez de linear para deixar o gráfico mais suave
+        if len(estacas) > 3:
+            from scipy.interpolate import interp1d
+            f_lat = interp1d(dists_orig, lats_orig, kind='cubic', fill_value="extrapolate")
+            f_lon = interp1d(dists_orig, lons_orig, kind='cubic', fill_value="extrapolate")
+            lats_1m = f_lat(estacas)
+            lons_1m = f_lon(estacas)
+        else:
+             lats_1m = np.interp(estacas, dists_orig, lats_orig)
+             lons_1m = np.interp(estacas, dists_orig, lons_orig)
+
         if not has_altitude or all(a == 0.0 for a in alts_orig):
             st.info(f"Buscando altitudes online para o trecho '{nome}' via Open-Meteo...")
             elev_1m = np.array(obter_elevacoes_reais(lats_1m, lons_1m))
         else:
             st.success(f"Usando altitudes nativas do KML para o trecho '{nome}'!")
-            elev_1m = np.interp(estacas, dists_orig, alts_orig)
+            if len(estacas) > 3:
+               f_alt = interp1d(dists_orig, alts_orig, kind='cubic', fill_value="extrapolate")
+               elev_1m = f_alt(estacas)
+            else:
+               elev_1m = np.interp(estacas, dists_orig, alts_orig)
             
         for e, la, lo, el in zip(estacas, lats_1m, lons_1m, elev_1m):
             dados_1m.append({'Trecho': nome, 'Estaca (m)': round(e, 2), 'Latitude': la, 'Longitude': lo, 'Cota (m)': round(el, 2)})
@@ -136,7 +150,6 @@ def processar_kml_denso(conteudo_kml):
 def renomear_em_lote(novo_nome_base):
     if st.session_state.df_resumo is not None and novo_nome_base.strip() != "":
         trechos_antigos = st.session_state.df_resumo['Trecho'].unique()
-        # Laço corrigido com a declaração de "antigo" no enumerate
         mapa_nomes = {antigo: f"{novo_nome_base} - {i:02d}" for i, antigo in enumerate(trechos_antigos, 1)}
         
         st.session_state.df_1m['Trecho'] = st.session_state.df_1m['Trecho'].map(mapa_nomes)
@@ -146,58 +159,55 @@ def renomear_em_lote(novo_nome_base):
 # ==========================================
 # FUNÇÕES DE PLOTAGEM (PLOTLY E MATPLOTLIB)
 # ==========================================
-def plotar_perfil_plotly(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor, mostrar_cotas):
+def plotar_perfil_plotly(df_t, row, espessura, cor, shape_linha, config_eixos):
     fig = go.Figure()
     
-    # 1. Linha do Relevo
+    # Renderização da Linha (Controlada pelo shape param 'spline' para mais arredondada ou 'linear' para quadrada)
     fig.add_trace(go.Scatter(
         x=df_t['Estaca (m)'], 
         y=df_t['Cota (m)'],
         mode='lines',
-        line=dict(color=cor, width=espessura),
+        line=dict(color=cor, width=espessura, shape=shape_linha),
         fill='tozeroy',
         fillcolor=f"rgba{tuple(int(cor.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.15,)}",
         name='Relevo'
     ))
 
-    # 2. Bolinhas de Máxima e Mínima
+    # Bolinhas e Textos de Máxima e Mínima (Ativados pelos botões do menu inferior)
     idx_max = df_t['Cota (m)'].idxmax()
     idx_min = df_t['Cota (m)'].idxmin()
     cota_max = df_t.loc[idx_max]
     cota_min = df_t.loc[idx_min]
     
-    fig.add_trace(go.Scatter(
-        x=[cota_max['Estaca (m)'], cota_min['Estaca (m)']],
-        y=[cota_max['Cota (m)'], cota_min['Cota (m)']],
-        mode='markers+text',
-        marker=dict(color=['#0055ff', '#ff0000'], size=10, symbol='circle', line=dict(color='white', width=2)),
-        text=[f"<b>Máx: {cota_max['Cota (m)']}m</b>", f"<b>Mín: {cota_min['Cota (m)']}m</b>"],
-        textposition=["top center", "bottom center"],
-        textfont=dict(size=11, color="black"),
-        name='Máx / Mín',
-        showlegend=False
-    ))
+    if config_eixos['mostrar_max_min']:
+        fig.add_trace(go.Scatter(
+            x=[cota_max['Estaca (m)'], cota_min['Estaca (m)']],
+            y=[cota_max['Cota (m)'], cota_min['Cota (m)']],
+            mode='markers+text',
+            marker=dict(color=['#0055ff', '#ff0000'], size=10, symbol='circle', line=dict(color='white', width=2)),
+            text=[f"<b>Máx: {cota_max['Cota (m)']}m</b>", f"<b>Mín: {cota_min['Cota (m)']}m</b>"],
+            textposition=["top center", "bottom center"],
+            textfont=dict(size=11, color="black"),
+            name='Máx / Mín',
+            showlegend=False
+        ))
     
     stats_text = (f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m<br>"
                   f"Extensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m")
 
-    # Configuração do Eixo Y (Horizontal lines)
+    # Customização flexível do Eixo Y (Esquerda) e X (Inferior) através das seleções do menu inferior
     yaxis_config = dict(
-        dtick=grid_y_princ, 
-        minor=dict(dtick=grid_y_sec), 
         showgrid=True, 
         gridcolor='lightgray',
-        showticklabels=mostrar_cotas,
-        title="Cota Z (m)" if mostrar_cotas else ""
+        showticklabels=config_eixos['mostrar_eixo_y'],
+        title="Cota Z (m)" if config_eixos['mostrar_eixo_y'] else ""
     )
 
-    # Configuração do Eixo X (Vertical lines)
     xaxis_config = dict(
-        dtick=grid_x_princ, 
-        minor=dict(dtick=grid_x_sec), 
         showgrid=True, 
         gridcolor='lightgray',
-        title="Distância (m)"
+        showticklabels=config_eixos['mostrar_eixo_x'],
+        title="Distância (m)" if config_eixos['mostrar_eixo_x'] else ""
     )
 
     fig.update_layout(
@@ -213,47 +223,6 @@ def plotar_perfil_plotly(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_
         )],
         margin=dict(l=40, r=40, t=60, b=40)
     )
-    return fig
-
-def plotar_perfil_matplotlib(df_t, row, espessura, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor, mostrar_cotas):
-    distancia = row['Distância Total (m)']
-    largura_dinamica = max(8, min(40, distancia * 0.15))
-    fig, ax = plt.subplots(figsize=(largura_dinamica, 6))
-
-    ax.plot(df_t['Estaca (m)'], df_t['Cota (m)'], color=cor, linewidth=espessura)
-    ax.fill_between(df_t['Estaca (m)'], df_t['Cota (m)'], df_t['Cota (m)'].min() - 5, color=cor, alpha=0.15)
-
-    idx_max = df_t['Cota (m)'].idxmax()
-    idx_min = df_t['Cota (m)'].idxmin()
-    cmax, cmin = df_t.loc[idx_max], df_t.loc[idx_min]
-    
-    ax.scatter([cmax['Estaca (m)']], [cmax['Cota (m)']], color='#0055ff', s=70, zorder=5, edgecolors='white', linewidth=1.5)
-    ax.scatter([cmin['Estaca (m)']], [cmin['Cota (m)']], color='#ff0000', s=70, zorder=5, edgecolors='white', linewidth=1.5)
-    
-    ax.annotate(f"Máx: {cmax['Cota (m)']}m", (cmax['Estaca (m)'], cmax['Cota (m)']), textcoords="offset points", xytext=(0,10), ha='center', fontsize=9, fontweight='bold')
-    ax.annotate(f"Mín: {cmin['Cota (m)']}m", (cmin['Estaca (m)'], cmin['Cota (m)']), textcoords="offset points", xytext=(0,-15), ha='center', fontsize=9, fontweight='bold')
-
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(grid_x_princ))
-    ax.xaxis.set_minor_locator(ticker.MultipleLocator(grid_x_sec))
-    
-    if mostrar_cotas:
-        ax.yaxis.set_major_locator(ticker.MultipleLocator(grid_y_princ))
-        ax.yaxis.set_minor_locator(ticker.MultipleLocator(grid_y_sec))
-        ax.set_ylabel('Cota Z (m)')
-    else:
-        ax.yaxis.set_ticklabels([])
-        ax.yaxis.set_ticks_position('none')
-
-    ax.grid(True, which='major', linestyle='-', color='#cccccc', alpha=0.7)
-    ax.grid(True, which='minor', linestyle=':', color='#e0e0e0', alpha=0.5)
-    ax.minorticks_on()
-
-    ax.set_title(row['Trecho'].upper(), fontsize=14, fontweight='bold', pad=20)
-    stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
-    plt.text(0.99, 0.05, stats_text, transform=ax.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-    ax.set_xlabel('Distância (m)')
-    plt.tight_layout()
     return fig
 
 # ==========================================
@@ -277,7 +246,8 @@ if uploaded_file is not None:
                 else:
                     kml_content = uploaded_file.read()
                     
-                df_1m, df_resumo = processar_kml_denso(kml_content)
+                # A densidade de 0.25 injeta muito mais pontos para evitar que o gráfico fique "quadrado"
+                df_1m, df_resumo = processar_kml_denso(kml_content, densidade_interp=0.25)
                 st.session_state.df_1m = df_1m
                 st.session_state.df_resumo = df_resumo
                 st.success("Relevo extraído e densificado com sucesso!")
@@ -290,9 +260,8 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
     col_sidebar, col_main = st.columns([1, 4])
     
     with col_sidebar:
-        st.header("2. Ajustes Visuais")
+        st.header("2. Gestão de Dados")
         
-        st.markdown("#### Gestão de Trechos")
         novo_lote = st.text_input("Renomear por lote (Ex: Lote A):")
         if st.button("Aplicar Renomeação Sequencial", use_container_width=True):
             renomear_em_lote(novo_lote)
@@ -301,25 +270,8 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
         trecho_selecionado = st.selectbox("Selecione o Trecho para visualizar:", trechos_disponiveis)
         
         st.markdown("---")
-        st.markdown("#### Estilo da Linha")
+        st.markdown("#### Estilo Básico")
         cor_grafico = st.color_picker("Cor do Relevo:", "#1c832a")
-        
-        st.markdown("---")
-        st.markdown("#### Ajustes de Medidas (Grid)")
-        
-        mostrar_cotas = st.toggle("Exibir Cotas Laterais (Min/Máx)", value=True, help="Mostra ou oculta as elevações no eixo Y.")
-        
-        col_grid_y, col_grid_x = st.columns(2)
-        
-        with col_grid_y:
-            st.markdown("**Horizontais (Y):**")
-            grid_y_princ = st.slider("Principal (m):", min_value=1.0, max_value=50.0, value=5.0, step=1.0, key='gy_p')
-            grid_y_sec = st.slider("Secundário (m):", min_value=0.5, max_value=10.0, value=1.0, step=0.5, key='gy_s')
-
-        with col_grid_x:
-            st.markdown("**Verticais (X):**")
-            grid_x_princ = st.slider("Principal (m):", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key='gx_p')
-            grid_x_sec = st.slider("Secundário (m):", min_value=0.5, max_value=50.0, value=5.0, step=0.5, key='gx_s')
 
     with col_main:
         st.header("3. Prévia Interativa (Plotly)")
@@ -327,83 +279,39 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
         container_grafico = st.container()
         container_controles_inferiores = st.container()
         
+        # --- NOVO BLOCO DE AJUSTES INFERIORES ABAIXO DO GRÁFICO ---
         with container_controles_inferiores:
-            st.markdown("<br>", unsafe_allow_html=True)
-            espessura_linha = st.slider("Espessura da Linha do Relevo:", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+            st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+            st.markdown("#### Ajustes de Renderização e Cotas")
+            
+            col_controles_1, col_controles_2, col_controles_3 = st.columns(3)
+            
+            with col_controles_1:
+                st.markdown("**Visibilidade de Cotas / Eixos**")
+                mostrar_eixo_y = st.toggle("Eixo Vertical (Y / Altura)", value=True)
+                mostrar_eixo_x = st.toggle("Eixo Horizontal (X / Distância)", value=True)
+                
+            with col_controles_2:
+                st.markdown("**Destaques no Desenho**")
+                mostrar_max_min = st.toggle("Rotular Cota Máxima e Mínima", value=True)
+                shape_linha = st.radio("Suavidade da Linha:", options=['spline', 'linear'], format_func=lambda x: "Arredondada (Muitos pontos)" if x == 'spline' else "Reta (Linhas duras)")
+
+            with col_controles_3:
+                st.markdown("**Estilo**")
+                espessura_linha = st.slider("Espessura da Linha:", min_value=0.5, max_value=5.0, value=2.0, step=0.1)
+
+            config_eixos = {
+                'mostrar_eixo_y': mostrar_eixo_y,
+                'mostrar_eixo_x': mostrar_eixo_x,
+                'mostrar_max_min': mostrar_max_min
+            }
             
         with container_grafico:
             df_trecho = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == trecho_selecionado]
             row_resumo = st.session_state.df_resumo[st.session_state.df_resumo['Trecho'] == trecho_selecionado].iloc[0]
             
-            fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
+            fig_interativa = plotar_perfil_plotly(df_trecho, row_resumo, espessura_linha, cor_grafico, shape_linha, config_eixos)
             st.plotly_chart(fig_interativa, use_container_width=True)
-
-    st.divider()
-    st.header("4. Exportação Profissional")
-    
-    if st.button("📦 Gerar & Exportar Pacote ZIP", type="primary"):
-        with st.spinner("Compilando relatórios e renderizando imagens estáticas..."):
-            zip_buffer = io.BytesIO()
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                excel_path = os.path.join(tmpdirname, f"topografia_{st.session_state.nome_base}.xlsx")
-                st.session_state.df_resumo.to_excel(excel_path, index=False)
-                
-                doc = Document()
-                doc.add_heading(f'Relatório de Topografia: {st.session_state.nome_base}', 0)
-                pdf = FPDF()
-                
-                pasta_img = os.path.join(tmpdirname, "perfis_exportados")
-                os.makedirs(pasta_img, exist_ok=True)
-                
-                for _, row in st.session_state.df_resumo.iterrows():
-                    t = row['Trecho']
-                    df_t = st.session_state.df_1m[st.session_state.df_1m['Trecho'] == t]
-                    
-                    fig_estatica = plotar_perfil_matplotlib(df_t, row, espessura_linha, grid_x_sec, grid_x_princ, grid_y_sec, grid_y_princ, cor_grafico, mostrar_cotas)
-                    img_name = f"{t.replace('/', '_')}.png"
-                    img_path = os.path.join(pasta_img, img_name)
-                    fig_estatica.savefig(img_path, dpi=120, bbox_inches='tight')
-                    plt.close(fig_estatica)
-                    
-                    doc.add_heading(t.upper(), level=1)
-                    stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
-                    doc.add_paragraph(stats_text)
-                    doc.add_picture(img_path, width=Inches(6.0))
-                    
-                    largura_dinamica = max(8, min(40, row['Distância Total (m)'] * 0.15))
-                    pdf.add_page(orientation='L' if largura_dinamica > 15 else 'P')
-                    pdf.set_font("Arial", "B", 16)
-                    pdf.cell(0, 10, t.upper(), ln=True)
-                    pdf.set_font("Arial", "", 10)
-                    pdf.multi_cell(0, 5, stats_text)
-                    pdf_img_w = min(270 if largura_dinamica > 15 else 190, largura_dinamica * 12)
-                    pdf.image(img_path, x=10, w=pdf_img_w)
-
-                doc_path = os.path.join(tmpdirname, f"Relatorio_{st.session_state.nome_base}.docx")
-                pdf_path = os.path.join(tmpdirname, f"Relatorio_{st.session_state.nome_base}.pdf")
-                doc.save(doc_path)
-                pdf.output(pdf_path)
-                
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(excel_path, os.path.basename(excel_path))
-                    zf.write(doc_path, os.path.basename(doc_path))
-                    zf.write(pdf_path, os.path.basename(pdf_path))
-                    for root, _, files in os.walk(pasta_img):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            zf.write(file_path, os.path.join("perfis_exportados", file))
-            
-            zip_buffer.seek(0)
-            
-            st.success("Pacote gerado com sucesso!")
-            st.download_button(
-                label="📥 Baixar Pacote Completo (.ZIP)",
-                data=zip_buffer,
-                file_name=f"exportacao_customizada_{st.session_state.nome_base}.zip",
-                mime="application/zip",
-                type="primary",
-                use_container_width=True
-            )
 
 # Rodapé Personalizado
 st.markdown("<p style='text-align: center; color: gray; font-size: 12px;'>código atualizado 17/11/2026  -  by @redmargoth</p>", unsafe_allow_html=True)
