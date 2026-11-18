@@ -36,29 +36,38 @@ def extrair_coordenadas(conteudo_kml):
     dados = []
     
     for placemark in soup.find_all('Placemark'):
-        ponto = placemark.find('Point')
-        if ponto:
-            nome = placemark.find('name').text if placemark.find('name') else 'Sem nome'
-            coords_tag = ponto.find('coordinates')
+        nome = placemark.find('name').text if placemark.find('name') else 'Sem nome'
+        
+        # 1. Tenta extrair se for um PINO/PONTO (<Point>)
+        if placemark.find('Point'):
+            coords_tag = placemark.find('Point').find('coordinates')
             if coords_tag:
-                coords_text = coords_tag.text.strip()
-                partes = coords_text.split(',')
-                if len(partes) >= 3:
+                partes = coords_tag.text.strip().split(',')
+                if len(partes) >= 2:
                     lon = float(partes[0].strip())
                     lat = float(partes[1].strip())
-                    alt = float(partes[2].strip())
+                    alt = float(partes[2].strip()) if len(partes) >= 3 else 0.0
+                    dados.append({'ID': nome, 'Longitude_X': lon, 'Latitude_Y': lat, 'Cota_Z': alt})
                     
-                    dados.append({
-                        'ID': nome,
-                        'Longitude_X': lon,
-                        'Latitude_Y': lat,
-                        'Cota_Z': alt
-                    })
+        # 2. Tenta extrair se for uma LINHA/PERFIL (<LineString>)
+        elif placemark.find('LineString'):
+            coords_tag = placemark.find('LineString').find('coordinates')
+            if coords_tag:
+                # Linhas possuem múltiplos pontos separados por espaço ou quebra de linha
+                pontos_str = coords_tag.text.strip().split()
+                for pt in pontos_str:
+                    partes = pt.split(',')
+                    if len(partes) >= 2:
+                        lon = float(partes[0].strip())
+                        lat = float(partes[1].strip())
+                        alt = float(partes[2].strip()) if len(partes) >= 3 else 0.0
+                        dados.append({'ID': nome, 'Longitude_X': lon, 'Latitude_Y': lat, 'Cota_Z': alt})
+                        
     return dados
 
 def processar_secoes_transversais(df_pontos, dist_corte_graus):
-    # Ordena os pontos pelo número do ID para seguir a ordem do levantamento
-    df_pontos['Numero_ID'] = df_pontos['ID'].str.extract(r'(\d+)').astype(float)
+    # Tenta extrair um número do ID para seguir a ordem do levantamento. Se não tiver número, assume 0.
+    df_pontos['Numero_ID'] = df_pontos['ID'].str.extract(r'(\d+)').astype(float).fillna(0)
     df_pontos = df_pontos.sort_values(by='Numero_ID').reset_index(drop=True)
     
     secoes = []
@@ -89,9 +98,10 @@ def processar_secoes_transversais(df_pontos, dist_corte_graus):
     resumos = {}
 
     for i, sec in enumerate(secoes):
-        nome_secao = f'Seção {(i+1):02d}'
+        # Usa o ID real que você deu lá no Google Earth como nome base (ex: 1, 2, 3...)
+        nome_real = sec[0]['ID']
+        nome_secao = f'Seção {nome_real}' if str(nome_real).isdigit() else f'{nome_real} ({i+1:02d})'
         
-        # Calcula a distância acumulada real (em metros) dentro desta seção específica
         dist_acumulada = 0.0
         elevacoes = []
         
@@ -224,13 +234,13 @@ def plotar_secao_matplotlib(df_sec, nome_secao, stats, cor, config):
 # INTERFACE DO USUÁRIO
 # ==========================================
 st.title("🛤️ Gerador de Gráficos: Seções Transversais")
-st.markdown("Extraia os pontos do KMZ e gere os gráficos individuais de cada linha transversal desenhada na rodovia.")
+st.markdown("Extraia as linhas do KMZ (Perfis) e gere os gráficos individuais de cada linha transversal desenhada.")
 
 st.header("1. Upload de Arquivo KMZ / KML")
 col_upload, col_settings = st.columns([2, 1])
 
 with col_upload:
-    uploaded_file = st.file_uploader("Selecione seu arquivo (Pinos ao longo das seções)", type=['kmz', 'kml'])
+    uploaded_file = st.file_uploader("Selecione seu arquivo (Pinos ou Linhas ao longo das seções)", type=['kmz', 'kml'])
 
 with col_settings:
     distancia_corte = st.number_input("Distância Máx. para mesma Seção (m):", min_value=1.0, value=30.0, step=1.0, help="Distância máxima entre um ponto e outro para serem considerados da mesma linha transversal.")
@@ -238,7 +248,7 @@ with col_settings:
 
 if st.button("▶️ Gerar Seções e Gráficos", type="primary"):
     if uploaded_file is not None:
-        with st.spinner("Processando agrupamentos e gerando seções transversais..."):
+        with st.spinner("Processando agrupamentos e extraindo vértices..."):
             st.session_state.nome_base = uploaded_file.name.rsplit('.', 1)[0]
             try:
                 if uploaded_file.name.lower().endswith('.kmz'):
@@ -248,6 +258,7 @@ if st.button("▶️ Gerar Seções e Gráficos", type="primary"):
                 else:
                     kml_content = uploaded_file.read()
                 
+                # CHAMA A NOVA FUNÇÃO QUE LÊ PINOS E LINHAS (PERFIS)
                 dados_brutos = extrair_coordenadas(kml_content)
                 df_pontos = pd.DataFrame(dados_brutos)
                 
@@ -256,9 +267,12 @@ if st.button("▶️ Gerar Seções e Gráficos", type="primary"):
                     st.session_state.df_graficos = df_g
                     st.session_state.df_tabela_larga = df_t
                     st.session_state.resumos = stats
-                    st.success(f"✅ {len(df_t)} seções geradas perfeitamente!")
+                    st.success(f"✅ {len(df_t)} seções processadas e geradas com sucesso!")
+                else:
+                    st.warning("⚠️ Nenhuma coordenada foi encontrada neste arquivo. Verifique se o KMZ contém Linhas (Caminhos) ou Pinos válidos.")
+                    
             except Exception as e:
-                st.error(f"❌ Erro: {e}")
+                st.error(f"❌ Erro interno de extração: {e}")
 
 if st.session_state.df_graficos is not None:
     st.divider()
@@ -357,6 +371,4 @@ if st.session_state.df_graficos is not None:
             st.success("Relatórios gerados com sucesso!")
             st.download_button(label="📥 Baixar Pacote Completo (.ZIP)", data=zip_buffer, file_name=f"secoes_transversais_{st.session_state.nome_base}.zip", mime="application/zip", type="primary")
 
-st.markdown("<p style='text-align: center; color: gray; font-size: 12px;'>Atualizado 18/11/2026 by @redmargoth</p>", unsafe_allow_html=True)
-
-st.markdown("<p style='text-align: center; color: gray; font-size: 12px;'>by @redmargoth</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray; font-size: 12px;'>código atualizado 18/11/2026 - by @redmargoth</p>", unsafe_allow_html=True)
