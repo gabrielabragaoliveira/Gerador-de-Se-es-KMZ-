@@ -5,3 +5,4 @@ beautifulsoup4
 ezdxf
 matplotlib
 aspose-cad
+geodesic
