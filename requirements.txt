@@ -2,7 +2,8 @@ streamlit
 pandas
 numpy
 beautifulsoup4
-ezdxf
+geopy
+plotly
 matplotlib
-aspose-cad
-geodesic
+python-docx
+fpdf2
