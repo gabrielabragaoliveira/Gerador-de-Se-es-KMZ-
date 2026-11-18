@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 # ==========================================
 # CONFIGURAÇÃO INICIAL DA PÁGINA
 # ==========================================
-st.set_page_config(page_title="App de Topografia & Relevo", page_icon="⛰️", layout="wide")
+st.set_page_config(page_title="Gerador de seções via KMZ", layout="wide")
 
 # Inicialização de Variáveis de Estado
 if 'df_1m' not in st.session_state:
