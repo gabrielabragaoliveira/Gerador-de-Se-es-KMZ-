@@ -1,5 +1,4 @@
 streamlit
+pandas
 numpy
-matplotlib
-python-docx
-fpdf2
+beautifulsoup4
