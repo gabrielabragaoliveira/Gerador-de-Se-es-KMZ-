@@ -263,7 +263,7 @@ def plotar_perfil_matplotlib(df_t, row, cor, config):
 
     ax.set_title(row['Trecho'].upper(), fontsize=14, fontweight='bold', pad=20)
     stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
-    plt.text(0.99, 0.05, stats_text.replace('\n', '\n'), transform=ax.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    plt.text(0.99, 0.05, stats_text, transform=ax.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
     plt.tight_layout()
     return fig
@@ -400,7 +400,7 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
                     
                     doc.add_heading(t.upper(), level=1)
                     stats_text = f"Mín: {row['Mín (m)']}m | Méd: {row['Méd (m)']}m | Máx: {row['Máx (m)']}m\nExtensão: {row['Distância Total (m)']}m | Ganho: {row['Ganho Elev (m)']}m | Perda: {row['Perda Elev (m)']}m"
-                    doc.add_paragraph(stats_text.replace('\n', '\n'))
+                    doc.add_paragraph(stats_text)
                     doc.add_picture(img_path, width=Inches(6.0))
                     
                     largura_dinamica = max(8, min(40, row['Distância Total (m)'] * 0.15))
@@ -408,7 +408,7 @@ if st.session_state.df_1m is not None and not st.session_state.df_1m.empty:
                     pdf.set_font("Arial", "B", 16)
                     pdf.cell(0, 10, t.upper(), ln=True)
                     pdf.set_font("Arial", "", 10)
-                    pdf.multi_cell(0, 5, stats_text.replace('\n', '\n'))
+                    pdf.multi_cell(0, 5, stats_text)
                     pdf_img_w = min(270 if largura_dinamica > 15 else 190, largura_dinamica * 12)
                     pdf.image(img_path, x=10, w=pdf_img_w)
 
